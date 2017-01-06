@@ -1,0 +1,111 @@
+#!/bin/bash
+
+domain="http://putlockers.ch"
+
+search="$1"
+file="$2"
+
+echo "Searching for \"$search\"..." 
+
+results="$(wget -O - "$domain/search/search.php?q=$search" 2> /dev/null | sed "s/<a/\\n/g" | grep -v "/a-z/" | grep -v "/year/" | grep -v "/genre/" | grep -v "/tv" | grep -v "/yesterday/" | grep -v "/today/" | grep -v "featured" | grep -v "/contact/" | grep "href=" | grep "title=" | awk -F\" '{ print $2 " \"" $4 "\"" }' | grep -v "\"Homepage\"" | uniq)"
+
+echo
+
+num=$(echo "$results" | wc -l)
+if test $num = 0; then
+	echo "No results."
+	exit 1
+fi
+url=""
+name=""
+if test $num != 1; then
+	echo "$num versions found:"
+	echo 
+	i=1
+	echo "$results" | while read url name; do
+		echo $i: $name
+		i=$((i+1))
+	done
+	while true; do
+		echo
+		read -p "Choose wisely: " n
+		if test "$n" -ge 1 -a "$n" -le "$num" 2> /dev/null; then
+			url=$(echo "$results" | sed -n "${n}p")
+		       	name=$(echo $url | awk -F\" '{ print $2}')
+			url=$(echo $url | awk '{ print $1}')
+			break
+		else
+			echo "Please type a number from 1 to $num."
+		fi
+	done
+else
+	name=$(echo $results | awk -F\" '{ print $2 }')
+	url=$(echo $results | awk '{ print $1 }')
+fi
+
+echo
+echo $name it is. 
+echo
+
+if test "$file" = ""; then
+	echo "No file given."
+	echo Use \"$name.mp4\"?
+	read -p "yes/no: " yn
+	if test "$yn" = "yes" -o "$yn" = "YES" -o "$yn" = "y"; then
+		name="$name.mp4"
+	else 
+		echo Aborting.
+		exit 0
+	fi
+fi
+
+if test "$file" = "debug"; then
+	echo "URL: $url"
+	exit 0
+fi
+
+ydlw() {
+	lshift="$2"
+	file="$3"
+        
+	youtube-dl -o "$file" --newline --no-warnings "$1" 2> /dev/null | grep --line-buffered "[download]" | grep --line-buffered "% of " | while read line; do 
+		value=$(echo $line | awk '{ print $2 }' | awk -F% '{ print $1}')
+		steps=40
+		scaled=$(printf %.0f $(echo $value \* $steps / 100 + 0.5 | bc))
+		echo -ne "$lshift["
+		for i in $(seq 1 $steps); do 
+			if test $scaled -ge $i; then
+				echo -ne \#
+			else
+				echo -ne " "
+			fi
+		done
+		echo -ne "] ($value%)   \r"
+	done
+	if test ${PIPESTATUS[0]} != 0; then
+		return -1
+	fi
+	echo
+	echo "${lshift}Done."
+	return 0
+}
+
+echo
+
+mirror=1
+wget -O - "$url" 2>/dev/null | grep "Version" | awk -F"href" '{ print $2 }' | awk -F\" '{ print $2 }' | while read line; do 
+	echo "Trying mirror $mirror..."
+	ydlw "$line" "    " "$file"
+	if test $? = 0; then
+		echo "SUCCESS!"
+		exit 42
+	fi
+	echo "  nope"
+	mirror=$((mirror+1))
+done
+if test $? = 42; then
+	exit 0
+fi
+
+echo "FAIL!"
+

@@ -1,0 +1,137 @@
+#!/bin/bash
+
+signalhandler() {
+	echo 
+	echo "Signal caught."
+	pkill -TERM -P $$
+	exit 9
+}
+
+trap signalhandler SIGHUP SIGINT SIGTERM
+
+host="http://serienstream.to"
+search=$1
+
+echo "Searching for \"$search\"..."
+
+url=$(wget -cO - "$host/serien" 2> /dev/null | grep -B 1 "$search" | grep "/serie/stream/" | awk -F"\"" '{ print $2 }')
+
+if test "$url" = ""; then
+	echo "  Not found."
+	exit 1
+fi
+
+name=$(echo $url | awk -F/ '{ print $4 }')
+
+if test $(echo $name | wc -l) != 1; then
+	echo name | while read line; do
+		echo "  - $line"
+	done
+	exit 0
+fi
+
+echo "  found $name";
+
+seasons=$(wget -cO - "$host$url" 2> /dev/null | grep "title=\"Staffel" | grep -v "data-episode" | wc -l)
+
+echo
+echo "There are $seasons seasons."
+
+season=$2
+
+if test "$season" = "search"; then
+	exit 0
+fi
+
+dls() {
+	host=$1
+	url=$2
+	season=$3
+
+	episodes=$(wget -cO - "$host$url/staffel-$season" 2> /dev/null | grep "title=\"Staffel" | grep "data-episode" | wc -l)
+	
+	echo "Downloading season $season ($episodes episodes)..."
+
+	mkdir -p $name/s$season
+	pushd $name/s$season > /dev/null
+
+	for i in $(seq 1 $episodes); do
+		echo "  episode $i ..."
+		dl $host $url $season $i
+		if test $? != 0; then
+			echo "  FAILED!"
+		else
+			echo "  SUCCESS!"
+		fi
+	done
+
+	popd > /dev/null
+
+	echo "Done"
+
+}	
+
+ydlw() {
+	lshift="$2"
+	file="$3"
+	
+	youtube-dl -o "$file" --newline --no-warnings "$1" 2> /dev/null | grep --line-buffered "[download]" | grep --line-buffered "% of " | while read line; do 
+		value=$(echo $line | awk '{ print $2 }' | awk -F% '{ print $1}')
+		steps=40
+		scaled=$(printf %.0f $(echo $value \* $steps / 100 + 0.5 | bc))
+		echo -ne "$lshift["
+		for i in $(seq 1 $steps); do 
+			if test $scaled -ge $i; then
+				echo -ne \#
+			else
+				echo -ne " "
+			fi
+		done
+		echo -ne "] ($value%)   \r"
+	done
+	if test ${PIPESTATUS[0]} != 0; then
+		return -1
+	fi
+	echo
+	echo "${lshift}Done."
+	return 0
+}
+
+dl() {
+	host=$1
+	url=$2
+	name=$(echo $url | awk -F/ '{ print $4 }')
+	season=$3
+	episode=$4
+
+	wget -cO - "$host/$url/staffel-$season/episode-$episode" 2> /dev/null | grep "<a href=\"/out/" | awk -F"\"" '{ print $2; }' | while read link; do
+
+		trap "exit 9" SIGINT
+
+		ydlw "$host$link" "    " "$name-s$season-e$episode.mp4"
+		if test $? = 0; then
+			exit 42
+		fi
+		echo "    nope"
+		echo "    trying next mirror"
+	done
+	if test $? = 42; then
+		return 0;
+	fi
+	echo "    No suitable download found."
+	return 1
+}
+
+if test "$season" = ""; then
+	for i in $(seq 1 $seasons); do
+		dls $host $url $i
+	done
+	exit 0
+fi
+
+if test "$season" -gt "$seasons"; then
+	echo "Season $season not found."
+	exit 2
+fi
+
+dls $host $url $season
